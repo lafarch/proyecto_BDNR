@@ -1,2 +1,5 @@
+yfinance
 requests
 pymongo
+pandas
+lxml
