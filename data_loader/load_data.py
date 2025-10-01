@@ -1,72 +1,104 @@
 import os
 import time
 import requests
+import pandas as pd
+import yfinance as yf
 from pymongo import MongoClient
 from pymongo.errors import ConnectionFailure
 
-def get_financial_data():
-    """
-    Fetches sample financial data from an API.
-    Replace this with your actual API endpoint and logic.
-    """
-    # Using a free sample API for this example
-    api_url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=usd"
-    print("Fetching data from API...")
+# --- CONFIGURACIÓN ---
+DB_NAME = "yfinance_data"
+COLLECTION_NAME = "acciones_historicas_sp500"
+TICKERS_TO_PROCESS = 80
+DATA_PERIOD = "5y"
+
+def get_sp500_tickers():
+    # (Esta función no necesita cambios, se mantiene igual)
+    print("--- Obteniendo la lista de tickers del S&P 500...")
     try:
-        response = requests.get(api_url, timeout=10)
-        response.raise_for_status()  # Raises an HTTPError for bad responses (4XX or 5XX)
-        print("Data fetched successfully.")
-        return response.json()
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching data from API: {e}")
-        return None
+        url = 'https://en.wikipedia.org/wiki/List_of_S%26P_500_companies'
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        tables = pd.read_html(response.text)
+        tickers = tables[0]['Symbol'].str.replace('.', '-', regex=False).tolist()
+        print(f" ¡Éxito! Se encontraron {len(tickers)} tickers.")
+        return tickers
+    except Exception as e:
+        print(f" Error al obtener los tickers: {e}")
+        return []
+
+def fetch_stock_data():
+    # (Esta función no necesita cambios, se mantiene igual)
+    tickers = get_sp500_tickers()
+    if not tickers: return None
+    
+    tickers_to_process = tickers[:TICKERS_TO_PROCESS]
+    all_documents = []
+    print(f"\n--- Iniciando la descarga de datos para {len(tickers_to_process)} tickers...")
+    # ... (resto de la lógica de descarga)
+    # Por brevedad, omito el cuerpo de la función que ya tienes
+    for i, ticker in enumerate(tickers_to_process):
+        print(f"Procesando ticker {i + 1}/{len(tickers_to_process)}: {ticker}")
+        try:
+            ticker_obj = yf.Ticker(ticker)
+            history = ticker_obj.history(period=DATA_PERIOD, auto_adjust=False)
+            if history.empty: continue
+            history.reset_index(inplace=True)
+            documents_to_insert = history.to_dict('records')
+            for doc in documents_to_insert:
+                doc['ticker'] = ticker
+                doc['fecha'] = doc.pop('Date').to_pydatetime()
+            all_documents.extend(documents_to_insert)
+            time.sleep(1)
+        except Exception as e:
+            print(f"    -  Error procesando {ticker}: {e}")
+    return all_documents
+
 
 def load_data_to_mongo(data):
-    """
-    Connects to MongoDB and loads the given data.
-    """
-    # Get MongoDB connection details from environment variables
+    if not data:
+        print("No hay datos para cargar.")
+        return
+
+    # ** LA PARTE CLAVE ESTÁ AQUÍ **
+    # Obtener credenciales del entorno
     mongo_user = os.getenv('MONGO_INITDB_ROOT_USERNAME')
     mongo_pass = os.getenv('MONGO_INITDB_ROOT_PASSWORD')
-    mongo_host = "mongodb" # This is the service name in docker-compose.yml
+    mongo_host = "mongodb" # 'mongodb' es el nombre del servicio
 
-    # Connection string
+    # Construir la URI para un contenedor local, no para Atlas
     mongo_uri = f"mongodb://{mongo_user}:{mongo_pass}@{mongo_host}:27017/"
-
-    print(f"Attempting to connect to MongoDB at {mongo_host}...")
     
-    # Retry connecting to MongoDB, as it might take a moment to start up
-    max_retries = 10
-    retry_delay = 5 # seconds
+    print(f"\n--- Intentando conectar a MongoDB en {mongo_host}...")
+    
+    max_retries = 5
+    retry_delay = 10
     for attempt in range(max_retries):
         try:
             client = MongoClient(mongo_uri, serverSelectionTimeoutMS=5000)
-            # The ismaster command is cheap and does not require auth.
             client.admin.command('ismaster')
-            print("MongoDB connection successful.")
+            print(" Conexión a MongoDB exitosa.")
             
-            db = client.financial_data
-            collection = db.crypto_prices
+            db = client[DB_NAME]
+            collection = db[COLLECTION_NAME]
             
-            # Insert data with a timestamp
-            for asset, prices in data.items():
-                document = {
-                    "asset": asset,
-                    "price_usd": prices['usd'],
-                    "timestamp": time.time()
-                }
-                collection.insert_one(document)
+            print("Limpiando la colección...")
+            collection.delete_many({})
             
-            print(f"Successfully inserted {len(data)} documents into the 'crypto_prices' collection.")
+            print(f"Insertando {len(data)} documentos...")
+            collection.insert_many(data)
+            
+            print(f"¡Éxito! Se insertaron {len(data)} documentos.")
             client.close()
             return
-        except ConnectionFailure as e:
-            print(f"Attempt {attempt + 1}/{max_retries}: MongoDB connection failed. Retrying in {retry_delay} seconds...")
+        except ConnectionFailure:
+            print(f"Intento {attempt + 1}/{max_retries}: Falló la conexión. Reintentando...")
             time.sleep(retry_delay)
     
-    print("Could not connect to MongoDB after several retries. Exiting.")
+    print(" No se pudo conectar a MongoDB. Saliendo.")
 
 if __name__ == "__main__":
-    financial_data = get_financial_data()
+    financial_data = fetch_stock_data()
     if financial_data:
         load_data_to_mongo(financial_data)
