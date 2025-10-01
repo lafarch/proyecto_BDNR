@@ -3,34 +3,41 @@ version: '3.8'
 services:
   # The MongoDB Database Service
   mongodb:
-    image: mongo:latest # Use the official MongoDB image from Docker Hub
+    image: mongo:latest
     container_name: mongodb
     restart: always
     environment:
-      # These variables are used by the official Mongo image to create a root user on first launch
       MONGO_INITDB_ROOT_USERNAME: user
       MONGO_INITDB_ROOT_PASSWORD: password
     ports:
-      # Map the container's port 27017 to the host's port 27017
-      # This allows you to connect to the DB from your computer with a tool like MongoDB Compass
       - "27017:27017"
     volumes:
-      # This creates a 'named volume' to persist the database data
-      # even if the container is removed and recreated.
       - mongo-data:/data/db
 
   # The Python Data Loader Service
   data-loader:
-    build: 
-      context: ./data_loader # Tell Compose where to find the Dockerfile
+    build:
+      context: ./data_loader
     container_name: data-loader
     restart: on-failure
     environment:
-      # Pass the same credentials to our Python script
       MONGO_INITDB_ROOT_USERNAME: user
       MONGO_INITDB_ROOT_PASSWORD: password
     depends_on:
-      - mongodb # This ensures that the 'mongodb' service is started before this one
+      - mongodb
+
+  # --- NUEVO SERVICIO AÑADIDO ---
+  # The Python Queries Service
+  queries-service:
+    build:
+      context: ./queries # 1. Apunta a la nueva carpeta 'queries'
+    container_name: queries-service
+    restart: on-failure
+    environment: # 2. Pasa las mismas credenciales de la base de datos
+      MONGO_INITDB_ROOT_USERNAME: user
+      MONGO_INITDB_ROOT_PASSWORD: password
+    depends_on: # 3. Asegura que se inicie después de la base de datos
+      - mongodb
 
 # Define the named volume that 'mongodb' service uses
 volumes:
